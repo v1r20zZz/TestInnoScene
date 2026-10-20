@@ -15,10 +15,11 @@ class Canvas(QGraphicsView):
         super().__init__();self.window=window;self.setScene(QGraphicsScene(self));self.item=BoardItem(self);self.scene().addItem(self.item)
         self.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);self.setBackgroundBrush(QColor('#dce3df'))
         self.setMouseTracking(True);self.setAcceptDrops(True);self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.start=None;self.selected=None;self.panning=False;self.points=[];self.pending=None
+        self.start=None;self.selected=None;self.panning=False;self.points=[];self.pending=None;self.handle=None
     def refresh(self):
         self.item.prepareGeometryChange();self.scene().setSceneRect(self.item.boundingRect());self.viewport().update()
-    def fit(self):self.fitInView(self.item.boundingRect(),Qt.KeepAspectRatio)
+    def fit(self):
+        self.fitInView(self.item.boundingRect(),Qt.KeepAspectRatio);self.window.zoomlabel.setText(f'{self.transform().m11()*100:.0f}%')
     def wheelEvent(self,e):
         scale=1.15 if e.angleDelta().y()>0 else 1/1.15
         if .1<self.transform().m11()*scale<8:self.scale(scale,scale)
@@ -37,6 +38,16 @@ class Canvas(QGraphicsView):
         p=self.coord(e);self.start=p;self.pending=None;w=self.window;d=w.doc.d
         tool='arrow' if e.button()==Qt.RightButton else w.tool
         self.active_tool=tool;self.source=square_at(p.x(),p.y(),d['style']['flipped'])
+        self.handle=None
+        if tool=='select' and self.selected and self.selected[0]=='object':
+            index=self.selected[1]
+            if index<len(d['objects']):
+                obj=d['objects'][index]
+                if not self.locked(obj['layer']):
+                    cp=self.canonical(p)
+                    for n,(x,y) in enumerate(obj['points']):
+                        if (cp-QPointF(x,y)).manhattanLength()<12/max(self.transform().m11(),.1):
+                            self.handle=(index,n);self.original_points=copy.deepcopy(obj['points']);return
         if tool=='select':
             self.selected=None;cp=self.canonical(p)
             for i in reversed(range(len(d['objects']))):
@@ -59,6 +70,8 @@ class Canvas(QGraphicsView):
         if self.panning:
             delta=e.position().toPoint()-self.last;self.last=e.position().toPoint()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-delta.x());self.verticalScrollBar().setValue(self.verticalScrollBar().value()-delta.y());return
+        if self.handle is not None:
+            i,n=self.handle;cp=self.canonical(self.snapped(p));self.window.doc.d['objects'][i]['points'][n]=[cp.x(),cp.y()];self.viewport().update();return
         if self.start and self.active_tool not in ('select','piece','erase'):
             self.pending=self.make_object(self.start,p);self.viewport().update()
     def make_object(self,a,b):
@@ -77,11 +90,21 @@ class Canvas(QGraphicsView):
         if self.start is None:return
         w=self.window;p=self.coord(e);tool=self.active_tool
         try:
+            if self.handle is not None:
+                self.handle=None;w.commit('Изменить узел обозначения');return
             if tool=='select' and self.selected and (p-self.start).manhattanLength()>5:
                 typ,index=self.selected
                 if typ=='piece':
                     target=square_at(p.x(),p.y(),w.doc.d['style']['flipped'])
-                    if target is not None:w.doc.move(index,target);self.selected=('piece',target);w.commit('Переместить фигуру')
+                    if target is not None:
+                        import chess
+                        promotion=chess.QUEEN;piece=chess.Board(w.doc.d['fen']).piece_at(index)
+                        if w.doc.d['legal'] and piece and piece.piece_type==chess.PAWN and chess.square_rank(target) in (0,7):
+                            from PySide6.QtWidgets import QInputDialog
+                            name,ok=QInputDialog.getItem(w,'Превращение пешки','Выберите фигуру',['Ферзь','Ладья','Слон','Конь'],0,False)
+                            if not ok:return
+                            promotion={'Ферзь':chess.QUEEN,'Ладья':chess.ROOK,'Слон':chess.BISHOP,'Конь':chess.KNIGHT}[name]
+                        w.doc.move(index,target,promotion);self.selected=('piece',target);w.commit('Переместить фигуру')
                 else:
                     delta=self.canonical(p)-self.canonical(self.start);o=w.doc.d['objects'][index]
                     o['points']=[[x+delta.x(),y+delta.y()] for x,y in o['points']];w.commit('Переместить объект')
@@ -97,7 +120,10 @@ class Canvas(QGraphicsView):
         except Exception as exc:w.error(exc)
         finally:self.start=None;self.pending=None;self.viewport().update()
     def keyPressEvent(self,e):
-        if e.key()==Qt.Key_Escape:self.points=[];self.start=None;self.pending=None;self.selected=None;self.viewport().update();return
+        if e.key()==Qt.Key_Escape:
+            if self.handle is not None:
+                self.window.doc.d['objects'][self.handle[0]]['points']=self.original_points;self.handle=None
+            self.points=[];self.start=None;self.pending=None;self.selected=None;self.viewport().update();return
         if e.key() in (Qt.Key_Return,Qt.Key_Enter) and len(self.points)>1:
             self.active_tool='poly';o=self.make_object(QPointF(0,0),QPointF(80,80));o['points']=[[p.x(),p.y()] for p in self.points]
             if not self.locked('Стрелки'):self.window.doc.d['objects'].append(o);self.window.commit('Ломаная стрелка')
@@ -113,8 +139,12 @@ class Canvas(QGraphicsView):
                 if d['style']['flipped']:r=QRectF(640-r.right(),640-r.bottom(),r.width(),r.height())
             else:return
             p.setPen(QPen(QColor('#f4aa35'),2,Qt.DashLine));p.drawRect(r)
+            if typ=='object' and not self.locked(d['objects'][index]['layer']):
+                p.setPen(QPen(QColor('#256fbe'),1));p.setBrush(QColor('white'));radius=4/max(self.transform().m11(),.1)
+                for x,y in d['objects'][index]['points']:
+                    pt=QPointF(640-x,640-y) if d['style']['flipped'] else QPointF(x,y);p.drawRect(QRectF(pt.x()-radius,pt.y()-radius,radius*2,radius*2))
     def dragEnterEvent(self,e):
-        if e.mimeData().hasText() and e.mimeData().text() in 'KQRBNPkqrbnp':e.acceptProposedAction()
+        if e.mimeData().hasText() and len(e.mimeData().text())==1 and e.mimeData().text() in 'KQRBNPkqrbnp':e.acceptProposedAction()
     def dragMoveEvent(self,e):e.acceptProposedAction()
     def dropEvent(self,e):
         if self.locked('Фигуры'):return

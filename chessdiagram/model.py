@@ -122,6 +122,19 @@ class Document:
         b=chess.Board(self.d['fen']); b.set_piece_at(sq,chess.Piece.from_symbol(symbol) if symbol else None)
         self.d['fen']=b.fen(en_passant='fen'); self.d['pgn']=''; self.d['ply']=0
         self.d['piece_overrides'].pop(str(sq),None)
+    def import_games(self,text):
+        stream=io.StringIO(text);games=[]
+        while True:
+            game=chess.pgn.read_game(stream)
+            if game is None:break
+            if game.errors:raise ValueError('Ошибка в партии № '+str(len(games)+1))
+            if len(games)>=1000:raise ValueError('За один импорт допускается не более 1000 партий')
+            d=diagram(f"{game.headers.get('White','?')} — {game.headers.get('Black','?')}")
+            d['pgn']=str(game);d['fen']=game.board().fen();d['style']=copy.deepcopy(self.d['style']);d['sets']=copy.deepcopy(self.d['sets']);games.append(d)
+        if not games:raise ValueError('В файле не найдено партий')
+        if len(games)+len(self.data['diagrams'])>10000:raise ValueError('Слишком много диаграмм в проекте')
+        self.data['active']=len(self.data['diagrams']);self.data['diagrams'].extend(games)
+        return len(games)
     def import_pgn(self,text):
         g=chess.pgn.read_game(io.StringIO(text))
         if g is None or g.errors: raise ValueError('Не удалось прочитать корректную партию PGN')

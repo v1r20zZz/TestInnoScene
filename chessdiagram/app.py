@@ -4,7 +4,7 @@ from pathlib import Path
 import chess
 from PySide6.QtCore import Qt,QTimer,QSettings,QMimeData,QSize,QByteArray
 from PySide6.QtGui import QAction,QKeySequence,QColor,QIcon,QPixmap,QDrag,QFontDatabase,QImage,QPainter
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QDockWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QToolButton,QLineEdit,QComboBox,QCheckBox,QDoubleSpinBox,QSpinBox,QTabWidget,QScrollArea,QListWidget,QListWidgetItem,QFileDialog,QMessageBox,QInputDialog,QColorDialog,QDialog,QDialogButtonBox,QTextBrowser,QProgressDialog)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QDockWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QToolButton,QLineEdit,QComboBox,QCheckBox,QDoubleSpinBox,QSpinBox,QTabWidget,QScrollArea,QListWidget,QListWidgetItem,QFileDialog,QMessageBox,QInputDialog,QColorDialog,QDialog,QDialogButtonBox,QTextBrowser,QProgressDialog,QStyle,QToolBar)
 from .model import Document,diagram,STYLE
 from .render import Renderer,builtin_svg
 from .canvas import Canvas
@@ -29,22 +29,41 @@ class Window(QMainWindow):
         super().__init__();self.doc=Document();self.renderer=Renderer(self.doc);self.settings=QSettings('ChessDiagram','Constructor')
         self.tool='select';self.piece_symbol='P';self.ann_color='#df504f';self.busy=False;self.controls={};self.actions={}
         self.store=Path(os.environ.get('APPDATA',Path.home()/'.local/share'))/'ChessDiagramConstructor';self.store.mkdir(parents=True,exist_ok=True)
-        self.recovery=self.store/'recovery.chessdiagram';self.resize(1450,960)
+        self.recovery=self.store/f'recovery-{os.getpid()}-{__import__("uuid").uuid4().hex[:8]}.chessdiagram';self.export_job=None;self.resize(1450,960)
         self.canvas=Canvas(self);self.setCentralWidget(self.canvas)
         self.zoomlabel=QLabel('100%');self.positionlabel=QLabel('—');self.infolabel=QLabel('')
         self.statusBar().addWidget(self.infolabel,1);self.statusBar().addPermanentWidget(self.positionlabel);self.statusBar().addPermanentWidget(self.zoomlabel)
         self.canvas.position.connect(self.positionlabel.setText)
-        self.build_tools();self.build_properties();self.build_collections();self.build_menus()
+        self.build_tools();self.build_properties();self.build_collections();self.build_menus();self.build_toolbar()
         self.resizeDocks([self.bottomdock],[175],Qt.Vertical)
         self.resizeDocks([self.leftdock,self.rightdock],[275,355],Qt.Horizontal)
         self.default_layout=self.saveState()
         if self.settings.value('layout'):self.restoreState(self.settings.value('layout'))
         self.theme(self.settings.value('theme','Светлая'));self.refresh();QTimer.singleShot(50,self.canvas.fit)
         self.timer=QTimer(self);self.timer.timeout.connect(self.autosave);self.timer.start(60000)
-        if recover and self.recovery.exists() and QMessageBox.question(self,'Восстановление','Найдена резервная копия. Восстановить проект?')==QMessageBox.Yes:
-            try:self.doc.load(self.recovery);self.doc.path=None;self.doc.dirty=True;self.refresh()
+        if recover:self.restore_recovery()
+    def restore_recovery(self):
+        from PySide6.QtCore import QLockFile
+        self.session_lock=QLockFile(str(self.recovery)+'.lock');self.session_lock.setStaleLockTime(0);self.session_lock.tryLock(0)
+        for path in sorted(self.store.glob('recovery*.chessdiagram'),key=lambda p:p.stat().st_mtime,reverse=True):
+            if path==self.recovery:continue
+            lock=QLockFile(str(path)+'.lock');lock.setStaleLockTime(0)
+            if not lock.tryLock(0):continue
+            try:
+                if QMessageBox.question(self,'Восстановление','Найдена резервная копия после незавершённого сеанса. Восстановить?')==QMessageBox.Yes:
+                    self.doc.load(path);self.doc.path=None;self.doc.dirty=True;self.load_fonts();self.refresh();path.unlink();break
             except Exception as e:self.error(e)
-    def error(self,e):QMessageBox.warning(self,'Не удалось выполнить действие',str(e))
+            finally:lock.unlock()
+    def build_toolbar(self):
+        bar=QToolBar('Быстрые действия',self);bar.setObjectName('quickActions');bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon);self.addToolBar(bar)
+        for title,icon in [('Новый проект',QStyle.SP_FileIcon),('Открыть…',QStyle.SP_DialogOpenButton),('Сохранить',QStyle.SP_DialogSaveButton),('Отменить',QStyle.SP_ArrowBack),('Повторить',QStyle.SP_ArrowForward),('Вписать в окно',QStyle.SP_TitleBarMaxButton),('RGB…',QStyle.SP_DialogApplyButton),('Страницы A4/A5',QStyle.SP_FileDialogDetailedView)]:
+            action=self.actions[title];action.setIcon(self.style().standardIcon(icon));bar.addAction(action)
+    def start_export(self,spec):
+        if self.export_job is not None:self.error('Дождитесь завершения текущего экспорта.');return False
+        from .jobs import ExportJob
+        self.export_job=ExportJob(self,spec);return True
+    def error(self,e):
+        __import__('logging').getLogger('chessdiagram').error('%s',e);QMessageBox.warning(self,'Не удалось выполнить действие',str(e))
     def guarded(self,fn):
         def run(*args):
             try:return fn()
@@ -144,9 +163,10 @@ class Window(QMainWindow):
         for t,f,s in [('Новый проект',self.new_project,'Ctrl+N'),('Открыть…',self.open_project,'Ctrl+O'),('Сохранить',self.save,'Ctrl+S'),('Сохранить как…',lambda:self.save(True),'Ctrl+Shift+S'),('Последние проекты',self.open_recent,None),('Импорт FEN',self.import_fen,None),('Импорт списка FEN',self.import_fen_list,None),('Импорт PGN',self.import_pgn,None),('Экспорт PGN',self.export_pgn,None),('Выход',self.close,'Alt+F4')]:add('Файл',t,f,s)
         add('Правка','Отменить',lambda:self.undo(-1),'Ctrl+Z');a=add('Правка','Повторить',lambda:self.undo(1),'Ctrl+Y');a.setShortcuts([QKeySequence('Ctrl+Y'),QKeySequence('Ctrl+Shift+Z')])
         for t,f,s in [('Удалить выбранное',self.delete_selected,'Delete'),('Дублировать выбранное',self.duplicate_selected,'Ctrl+D'),('Копировать диаграмму',self.copy_image,'Ctrl+Shift+C'),('Вставить изображение',self.paste_image,'Ctrl+Shift+V'),('Копировать FEN',lambda:QApplication.clipboard().setText(self.doc.d['fen']),None),('Вставить FEN',lambda:self.position(QApplication.clipboard().text()),None)]:add('Правка',t,f,s)
-        add('Вид','Вписать в окно',self.canvas.fit,'Ctrl+0');add('Вид','Восстановить панели',lambda:self.restoreState(self.default_layout))
+        add('Вид','Поиск команды…',self.command_palette,'Ctrl+K');add('Вид','Вписать в окно',self.canvas.fit,'Ctrl+0');add('Вид','Восстановить панели',lambda:self.restoreState(self.default_layout))
         for d in [self.leftdock,self.rightdock,self.selecteddock,self.bottomdock]:menus['Вид'].addAction(d.toggleViewAction())
         add('Доска','Повернуть',lambda:self.set_style('flipped',not self.doc.d['style']['flipped']),'F');add('Доска','Начальная позиция',lambda:self.position(chess.STARTING_FEN));add('Доска','Пустая доска',lambda:self.position(chess.Board(None).fen()))
+        add('Доска','Сторона хода',self.choose_turn)
         add('Доска','Проверить позицию',self.validate_position);add('Доска','Включить / выключить легальные ходы',self.toggle_legal)
         add('Доска','Предыдущий ход PGN',lambda:self.goto_ply(-1),'Left');add('Доска','Следующий ход PGN',lambda:self.goto_ply(1),'Right');add('Доска','Показать ходы PGN',self.show_pgn)
         add('Доска','Выделить центр',self.highlight_center)
@@ -158,7 +178,7 @@ class Window(QMainWindow):
         for name in ['Учебник','Детская тетрадь','Цветная','Минималистичная','Без координат','Крупные фигуры','Чёрно-белая']:add('Шаблоны',name,lambda n=name:self.preset(n))
         for t,f,s in [('RGB…',lambda:self.export_dialog(False),'Ctrl+E'),('CMYK…',lambda:self.export_dialog(True),None),('Пакетный экспорт',self.batch_export,None),('Страницы A4/A5',self.export_pages,None),('Экспорт FEN',self.export_fen,None),('Повторить экспорт',self.repeat_export,'F5')]:add('Экспорт',t,f,s)
         add('Настройки','Светлая тема',lambda:self.theme('Светлая'));add('Настройки','Тёмная тема',lambda:self.theme('Тёмная'));add('Настройки','Горячие клавиши',self.edit_shortcuts)
-        add('Справка','Руководство',self.help);add('Справка','О программе',lambda:QMessageBox.information(self,APP,'Версия 0.1.0 — разработка\nНастольный редактор шахматных диаграмм.\nWindows-сборка и полная приёмка ещё не выполнены.\nGPL-3.0-or-later; лицензии — в папке LICENSES.'))
+        add('Справка','Руководство',self.help);add('Справка','О программе',lambda:QMessageBox.information(self,APP,'Версия 0.2.0 — предварительный выпуск\nРедактор диаграмм и учебных листов.\nКоммерческая приёмка ещё не завершена.\nGPL-3.0-or-later; лицензии — в папке LICENSES.'))
     def set_style(self,key,val):
         if self.busy or self.doc.d['style'][key]==val:return
         self.doc.d['style'][key]=val;self.commit('Настройка: '+key)
@@ -189,6 +209,7 @@ class Window(QMainWindow):
     def refresh(self):
         self.busy=True
         try:
+            self.actions['Отменить'].setEnabled(self.doc.cursor>0);self.actions['Повторить'].setEnabled(self.doc.cursor<len(self.doc.states)-1)
             d=self.doc.d;s=d['style']
             for key,w in self.controls.items():
                 val=s[key]
@@ -226,7 +247,13 @@ class Window(QMainWindow):
         self.commit('Импорт списка FEN')
     def import_pgn(self):
         path,_=QFileDialog.getOpenFileName(self,'Импорт PGN','','PGN (*.pgn)')
-        if path:self.doc.import_pgn(Path(path).read_text(encoding='utf-8-sig'));self.commit('Импорт PGN')
+        if not path:return
+        text=Path(path).read_text(encoding='utf-8-sig')
+        mode,ok=QInputDialog.getItem(self,'Импорт PGN','Режим',['Все партии — отдельными диаграммами','Первую партию в текущую диаграмму'],0,False)
+        if not ok:return
+        if mode.startswith('Все'):self.doc.import_games(text)
+        else:self.doc.import_pgn(text)
+        self.canvas.selected=None;self.commit('Импорт PGN')
     def export_pgn(self):
         if not self.doc.d['pgn']:raise ValueError('Нет импортированной партии. Произвольная расстановка сохраняется как FEN.')
         path,_=QFileDialog.getSaveFileName(self,'Экспорт PGN','','PGN (*.pgn)')
@@ -236,6 +263,9 @@ class Window(QMainWindow):
         if path:Path(path).write_text(self.doc.d['fen'],encoding='utf-8')
     def goto_ply(self,delta):self.doc.goto_ply(self.doc.d['ply']+delta);self.commit('Просмотр партии')
     def show_pgn(self):QMessageBox.information(self,'Партия PGN',self.doc.d['pgn'] or 'Партия не загружена')
+    def choose_turn(self):
+        board=chess.Board(self.doc.d['fen']);name,ok=QInputDialog.getItem(self,'Сторона хода','Кто ходит?',['Белые','Чёрные'],0 if board.turn else 1,False)
+        if ok:board.turn=name=='Белые';self.position(board.fen(en_passant='fen'))
     def validate_position(self):
         b=chess.Board(self.doc.d['fen']);QMessageBox.information(self,'Проверка позиции','Позиция допустима.' if b.is_valid() else f'Позиция не соответствует правилам обычной партии (код {int(b.status())}).\nДля учебных диаграмм это разрешено.')
     def toggle_legal(self):self.doc.d['legal']=not self.doc.d['legal'];self.commit('Режим проверки ходов')
@@ -424,9 +454,12 @@ class Window(QMainWindow):
         try:self.doc.save(self.recovery,autosave=True);self.statusBar().showMessage('Резервная копия сохранена',3000)
         except Exception as e:self.statusBar().showMessage('Не удалось сохранить резервную копию: '+str(e),10000)
     def closeEvent(self,e):
+        if self.export_job is not None:
+            self.statusBar().showMessage('Дождитесь завершения экспорта или отмените его.',6000);e.ignore();return
         try:
             if not self.confirm_save():e.ignore();return
             self.settings.setValue('layout',self.saveState());self.timer.stop()
+            if hasattr(self,'session_lock'):self.session_lock.unlock()
             if self.recovery.exists():self.recovery.unlink()
             e.accept()
         except Exception as exc:self.error(exc);e.ignore()
@@ -459,23 +492,13 @@ class Window(QMainWindow):
         elif name=='Чёрно-белая':s.update(light='#ffffff',dark='#999999',background='#ffffff')
         self.commit('Шаблон: '+name)
     def export_dialog(self,cmyk=False):
-        from .preflight import inspect_document
-        warnings=inspect_document(self.doc,self.doc.d)
-        if warnings and QMessageBox.question(self,'Проверка перед экспортом','\n'.join(warnings)+'\nПродолжить экспорт?')!=QMessageBox.Yes:return
-        filters='TIFF (*.tiff);;PDF (*.pdf)' if cmyk else 'PNG (*.png);;SVG (*.svg);;PDF (*.pdf);;TIFF (*.tiff);;JPEG (*.jpg);;BMP (*.bmp)'
-        path,filter_=QFileDialog.getSaveFileName(self,'Экспорт CMYK' if cmyk else 'Экспорт RGB',self.doc.d['name'],filters)
-        if not path:return
-        ext=re.search(r'\*([.a-z]+)',filter_).group(1)
-        if not Path(path).suffix:path+=ext
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:export_file(self.doc,self.doc.d,path,cmyk)
-        finally:QApplication.restoreOverrideCursor()
-        self.last_export=(path,cmyk);self.statusBar().showMessage('Экспорт завершён: '+path,8000)
+        from .studio import ExportStudio
+        ExportStudio(self,cmyk=cmyk).exec()
     def repeat_export(self):
         if not hasattr(self,'last_export'):return self.export_dialog(False)
         path,cmyk=self.last_export
         if Path(path).exists() and QMessageBox.question(self,'Перезапись','Перезаписать '+Path(path).name+'?')!=QMessageBox.Yes:return
-        export_file(self.doc,self.doc.d,path,cmyk);self.statusBar().showMessage('Экспорт завершён',4000)
+        self.start_export({'kind':'diagrams','outputs':[dict(path=path,cmyk=cmyk,index=self.doc.data['active'])]})
     def batch_export(self):
         folder=QFileDialog.getExistingDirectory(self,'Папка пакетного экспорта')
         if not folder:return
@@ -490,24 +513,10 @@ class Window(QMainWindow):
             paths.append(Path(folder)/(name+ext))
         if len({str(p).casefold() for p in paths})!=len(paths):raise ValueError('Шаблон создаёт одинаковые имена. Добавьте {n}.')
         if any(p.exists() for p in paths) and QMessageBox.question(self,'Перезапись','Заменить совпадающие файлы?')!=QMessageBox.Yes:return
-        progress=QProgressDialog('Экспорт диаграмм…','Отмена',0,len(paths),self);progress.setWindowModality(Qt.WindowModal)
-        done=0
-        for d,path in zip(self.doc.data['diagrams'],paths):
-            QApplication.processEvents()
-            if progress.wasCanceled():break
-            export_file(self.doc,d,path,fmt.startswith('CMYK'));done+=1;progress.setValue(done)
-        progress.close();QMessageBox.information(self,'Экспорт',f'Сохранено {done} из {len(paths)} диаграмм.')
+        self.start_export({'kind':'diagrams','outputs':[dict(path=str(path),index=i,cmyk=fmt.startswith('CMYK')) for i,path in enumerate(paths)]})
     def export_pages(self):
-        paper,ok=QInputDialog.getItem(self,'Страница','Формат',['A4','A5'],0,False)
-        if not ok:return
-        cols,ok=QInputDialog.getInt(self,'Сетка','Столбцов:',2,1,8)
-        if not ok:return
-        rows,ok=QInputDialog.getInt(self,'Сетка','Строк:',3,1,10)
-        if not ok:return
-        gap,ok=QInputDialog.getDouble(self,'Интервалы','Расстояние, мм:',8,0,25,1)
-        if not ok:return
-        path,_=QFileDialog.getSaveFileName(self,'Экспорт страниц','','PDF (*.pdf)')
-        if path:contact_sheet(self.doc,path,paper,cols,rows,gap)
+        from .studio import ExportStudio
+        ExportStudio(self,pages=True).exec()
     def proof(self):
         profile=profile_bytes(self.doc,self.doc.d);im=softproof(raster(self.renderer,self.doc.d,120),profile,self.doc.d['style']['intent'])
         b=io.BytesIO();im.save(b,format='PNG');label=QLabel();label.setPixmap(QPixmap.fromImage(QImage.fromData(b.getvalue())))
@@ -526,6 +535,18 @@ class Window(QMainWindow):
         else:colors=('#f5f7f6','#213a30','#ffffff','#d8e6df')
         bg,fg,field,hover=colors
         self.setStyleSheet(f'QWidget {{background:{bg};color:{fg};font-size:12px;}} QLineEdit,QComboBox,QAbstractSpinBox,QListWidget,QTextBrowser {{background:{field};border:1px solid #87998f;border-radius:4px;padding:4px;}} QPushButton,QToolButton {{background:{field};border:1px solid #a1b2a7;border-radius:5px;padding:6px;}} QPushButton:hover,QToolButton:hover {{background:{hover};}} QDockWidget::title {{padding:7px;font-weight:bold;}} QTabBar::tab {{padding:8px;}} QMenu::item:selected {{background:{hover};}}')
+    def command_palette(self):
+        dlg=QDialog(self);dlg.setWindowTitle('Поиск команды');v=QVBoxLayout(dlg);search=QLineEdit();search.setPlaceholderText('Название команды, например: экспорт, фигуры, шаблон…');v.addWidget(search);items=QListWidget();v.addWidget(items)
+        def update(text=''):
+            items.clear()
+            for name,action in self.actions.items():
+                if action.isEnabled() and all(word in name.casefold() for word in text.casefold().split()):
+                    item=QListWidgetItem(name+('    '+action.shortcut().toString() if not action.shortcut().isEmpty() else ''));item.setData(Qt.UserRole,name);items.addItem(item)
+            if items.count():items.setCurrentRow(0)
+        def choose(*args):
+            item=items.currentItem()
+            if item:dlg.accept();self.actions[item.data(Qt.UserRole)].trigger()
+        search.textChanged.connect(update);search.returnPressed.connect(choose);items.itemActivated.connect(choose);update();dlg.resize(620,480);search.setFocus();dlg.exec()
     def edit_shortcuts(self):
         names=list(self.actions);name,ok=QInputDialog.getItem(self,'Горячие клавиши','Команда:',names,0,False)
         if not ok:return
@@ -555,11 +576,11 @@ class Window(QMainWindow):
     def favorite_save(self):
         name,ok=QInputDialog.getText(self,'Избранное','Название:',text=self.doc.d['name'])
         if not ok or not name:return
-        path=self.store/'favorites.json';data=json.loads(path.read_text()) if path.exists() else {}
+        path=self.store/'favorites.json';data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
         if name in data and QMessageBox.question(self,'Замена','Заменить позицию?')!=QMessageBox.Yes:return
         data[name]=self.doc.d['fen'];path.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8')
     def favorite_open(self):
-        path=self.store/'favorites.json';data=json.loads(path.read_text()) if path.exists() else {}
+        path=self.store/'favorites.json';data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
         if not data:QMessageBox.information(self,'Избранное','Сохранённых позиций нет.');return
         name,ok=QInputDialog.getItem(self,'Избранное','Позиция:',list(data),0,False)
         if ok:self.position(data[name])
@@ -611,7 +632,10 @@ class Window(QMainWindow):
 
 def main():
     app=QApplication(sys.argv);QFontDatabase.addApplicationFont(str(ROOT/'assets'/'DejaVuSans.ttf'));app.setApplicationName(APP);app.setOrganizationName('ChessDiagram');app.setStyle('Fusion')
-    w=Window();w.show()
+    if '--export-job' in sys.argv:
+        from .jobs import execute_job
+        return execute_job(sys.argv[sys.argv.index('--export-job')+1])
+    w=Window(recover='--smoke-test' not in sys.argv);w.show()
     if len(sys.argv)>1 and not sys.argv[1].startswith('--'):
         QTimer.singleShot(0,w.guarded(lambda:w.open_project(sys.argv[1])))
     if '--smoke-test' in sys.argv:QTimer.singleShot(500,app.quit)

@@ -1,7 +1,7 @@
 # Windows-only build. Qt and Python runtime are bundled in an onedir distribution.
 from pathlib import Path
 root=Path(SPECPATH)
-datas=[(str(root/'assets'),'assets'),(str(root/'LICENSES'),'LICENSES'),(str(root/'LICENSE'),'.'),(str(root/'РУКОВОДСТВО.md'),'.')]
+datas=[(str(root/'assets'),'assets'),(str(root/'LICENSES'),'LICENSES'),(str(root/'LICENSE'),'.'),(str(root/'RELEASE_0.2.md'),'.'),(str(root/'РУКОВОДСТВО.md'),'.')]
 if (root/'ghostscript').exists():datas.append((str(root/'ghostscript'),'ghostscript'))
 a=Analysis([str(root/'main.py')],pathex=[str(root)],binaries=[],datas=datas,
            hiddenimports=['PIL.ImageCms','PIL.TiffImagePlugin','PIL.JpegImagePlugin','PySide6.QtSvg'],

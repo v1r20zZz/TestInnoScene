@@ -3,7 +3,7 @@
 [Setup]
 AppId={{DE7A936B-263B-4ADB-8E6C-79E2D4E1F018}
 AppName={#AppName}
-AppVersion=0.1.0
+AppVersion=0.2.0
 AppPublisher=ChessDiagramConstructor
 DefaultDirName={localappdata}\Programs\ChessDiagramConstructor
 DefaultGroupName={#AppName}
