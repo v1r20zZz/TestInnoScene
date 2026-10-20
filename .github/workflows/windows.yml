@@ -1,0 +1,36 @@
+name: Windows build (candidate, not a verified release)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install innosetup ghostscript -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Tool installation failed' }
+          $gs = Get-ChildItem 'C:\Program Files\gs' -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $gs) { throw 'Ghostscript not found' }
+          New-Item -ItemType Directory -Force ghostscript | Out-Null
+          Copy-Item "$($gs.FullName)\*" ghostscript -Recurse
+          $icc = Get-ChildItem ghostscript -Recurse -Filter default_cmyk.icc | Select-Object -First 1
+          if (-not $icc) { throw 'Test profile not found' }
+          "TEST_CMYK_ICC=$($icc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test and build
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChessDiagramConstructor-Windows-candidate
+          path: |
+            release/ChessDiagramConstructor_Setup.exe
+            test-results-windows.xml
+          if-no-files-found: error
