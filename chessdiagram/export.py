@@ -44,7 +44,7 @@ def pdf_rgb(renderer,d,path):
     writer=QPdfWriter(str(path));writer.setResolution(1200)
     writer.setPageSize(QPageSize(QSizeF(rect.width()*mm,rect.height()*mm),QPageSize.Millimeter))
     writer.setPageMargins(QMarginsF(0,0,0,0));writer.setTitle(d['name']);writer.setCreator('Конструктор шахматных диаграмм')
-    p=QPainter(writer);p.scale(writer.width()/rect.width(),writer.height()/rect.height());p.translate(-rect.x(),-rect.y());renderer.draw(p,d);p.end();del writer
+    p=QPainter(writer);p.scale(writer.width()/rect.width(),writer.height()/rect.height());p.translate(-rect.x(),-rect.y());renderer.draw(p,d);p.end();del p;del writer
     exact_pdf_size(path,rect.width()*mm,rect.height()*mm)
 
 def ghostscript():
@@ -60,7 +60,7 @@ def cmyk_pdf(source,dest,profile,intent):
     from pypdf.generic import DictionaryObject,NameObject,NumberObject,DecodedStreamObject,ArrayObject,TextStringObject
     with tempfile.TemporaryDirectory() as td:
         icc=Path(td)/'output.icc';icc.write_bytes(profile); converted=Path(td)/'converted.pdf'
-        args=[gs,'-dSAFER','-dBATCH','-dNOPAUSE','-sDEVICE=pdfwrite','-dCompatibilityLevel=1.6',
+        args=[gs,'-dSAFER',f'--permit-file-read={icc}','-dBATCH','-dNOPAUSE','-sDEVICE=pdfwrite','-dCompatibilityLevel=1.6',
               '-sColorConversionStrategy=CMYK','-dProcessColorModel=/DeviceCMYK',f'-dRenderIntent={intent}',
               '-dOverrideICC',f'-sOutputICCProfile={icc}',f'-sOutputFile={converted}',str(source)]
         result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,creationflags=0x08000000 if os.name=='nt' else 0)
@@ -84,11 +84,11 @@ def export_file(doc,d,path,cmyk=False):
             rect=renderer.rect(d);mm=s['board_mm']/640
             g=QSvgGenerator();g.setFileName(tmp);g.setResolution(96)
             g.setSize(QSize(round(rect.width()*mm/25.4*96),round(rect.height()*mm/25.4*96)));g.setViewBox(rect);g.setTitle(d['name'])
-            p=QPainter(g);renderer.draw(p,d);p.end()
+            p=QPainter(g);renderer.draw(p,d);p.end();del p;del g
             # Physical dimensions must not be rounded to screen pixels.
             import re
-            txt=Path(tmp).read_text();txt=re.sub(r'width="[^"]+" height="[^"]+"',f'width="{rect.width()*mm:.6f}mm" height="{rect.height()*mm:.6f}mm"',txt,count=1)
-            Path(tmp).write_text(txt)
+            txt=Path(tmp).read_text(encoding='utf-8');txt=re.sub(r'width="[^"]+" height="[^"]+"',f'width="{rect.width()*mm:.6f}mm" height="{rect.height()*mm:.6f}mm"',txt,count=1)
+            Path(tmp).write_text(txt,encoding='utf-8')
         elif ext=='.pdf':
             if cmyk:
                 with tempfile.TemporaryDirectory() as td:
@@ -120,5 +120,5 @@ def contact_sheet(doc,path,paper='A4',cols=2,rows=3,gap=10):
         p.drawText(QRectF(0,0,cw,8*mm),0,d['name'])
         rect=renderer.rect(d);scale=min(cw/rect.width(),(ch-10*mm)/rect.height())
         p.translate((cw-rect.width()*scale)/2,10*mm);p.scale(scale,scale);p.translate(-rect.x(),-rect.y());renderer.draw(p,d);p.restore()
-    p.end();del writer
+    p.end();del p;del writer
     exact_pdf_size(path,210 if paper=='A4' else 148,297 if paper=='A4' else 210)
