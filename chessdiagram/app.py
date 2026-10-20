@@ -26,7 +26,7 @@ class PieceButton(QToolButton):
 
 class Window(QMainWindow):
     def __init__(self,recover=True):
-        super().__init__();self.doc=Document();self.renderer=Renderer(self.doc);self.settings=QSettings('ChessDiagram','Constructor')
+        super().__init__();self.setWindowIcon(QIcon(str(ROOT/'assets'/'app.svg')));self.doc=Document();self.renderer=Renderer(self.doc);self.settings=QSettings('ChessDiagram','Constructor')
         self.tool='select';self.piece_symbol='P';self.ann_color='#df504f';self.busy=False;self.controls={};self.actions={}
         self.store=Path(os.environ.get('APPDATA',Path.home()/'.local/share'))/'ChessDiagramConstructor';self.store.mkdir(parents=True,exist_ok=True)
         self.recovery=self.store/f'recovery-{os.getpid()}-{__import__("uuid").uuid4().hex[:8]}.chessdiagram';self.export_job=None;self.resize(1450,960)

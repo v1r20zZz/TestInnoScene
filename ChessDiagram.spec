@@ -7,5 +7,5 @@ a=Analysis([str(root/'main.py')],pathex=[str(root)],binaries=[],datas=datas,
            hiddenimports=['PIL.ImageCms','PIL.TiffImagePlugin','PIL.JpegImagePlugin','PySide6.QtSvg'],
            excludes=['PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets','PySide6.QtWebEngineQuick','PySide6.QtPdf','PySide6.QtMultimedia'],noarchive=False)
 pyz=PYZ(a.pure)
-exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='ChessDiagramConstructor',debug=False,strip=False,upx=False,console=False)
+exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='ChessDiagramConstructor',debug=False,strip=False,upx=False,console=False,icon=str(root/'assets'/'app.ico'))
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='ChessDiagramConstructor')
